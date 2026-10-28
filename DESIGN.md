@@ -123,6 +123,8 @@ x_t = external_t + Environment(y_{<t}) + noise_t
 
 第二轮代码为 `trial2.py` 和 `trial2_colab.ipynb`。它保留同一合成频带任务，增加短到长的训练顺序、持续写入 Google Drive 的训练日志、序列编辑距离与起止错误，以及移除可塑性连接和清除循环活动的对照。第二轮训练尚未运行，结果需要从 Colab 回传后才能判断。
 
+第二轮模型提供 `initial_state()` 和 `step(external_frame, state, ...)`，可在推理时一次只送入当前帧；批量训练的 `forward()` 只是按时间顺序重复调用 `step()` 并通过时间反向传播。当前实验的帧是人工构造的频带编号独热向量，尚未实现“真实波形逐帧分频编码”。声学回传也是输出频带概率经过固定帧数延迟和增益后混入输入的代理信号，尚未模拟扬声器波形、麦克风采集及重新编码。因此本轮只能验证有限状态的时间序列任务和简化闭环，不能宣称完成真实音频流输入输出。
+
 ## 10. 相关研究入口
 
 - LMU：<https://papers.neurips.cc/paper_files/paper/2019/hash/952285b9b7e7a1be5aa7849f32ffff05-Abstract.html>

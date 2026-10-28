@@ -49,40 +49,53 @@ class StreamMemory(nn.Module):
         self.output = nn.Sequential(nn.Linear(width * 3 + plastic, width), nn.Tanh(),
                                     nn.Linear(width, N_TONES + 1))
 
+    def initial_state(self, batch_size, device, dtype, delay):
+        if delay < 1:
+            raise ValueError("delay must be at least one frame")
+        h = [torch.zeros(batch_size, self.width, device=device, dtype=dtype) for _ in range(3)]
+        p = torch.zeros(batch_size, self.plastic, self.plastic, device=device, dtype=dtype)
+        # Only the simulated environment holds recent outputs, bounded by delay.
+        environment = [torch.zeros(batch_size, N_TONES + 1, device=device, dtype=dtype)
+                       for _ in range(delay)]
+        return h, p, environment
+
+    def step(self, external_frame, state, feedback_gain=0.0, use_plastic=True, clear_h=False):
+        """Consume exactly one current frequency frame and return one output frame."""
+        h, p, environment = state
+        if clear_h:
+            h = [torch.zeros_like(v) for v in h]
+        heard = external_frame + feedback_gain * environment[0]
+        old = torch.cat(h, dim=-1)
+        drive = self.encoder(heard)
+        keep = torch.sigmoid(self.keep_logit)
+        h = [keep[i] * h[i] + (1 - keep[i]) * torch.tanh(drive + self.recurrent[i](old))
+             for i in range(3)]
+        current = torch.cat(h, dim=-1)
+        if use_plastic:
+            # Continuous acoustic-energy gating: received self-sound may also write.
+            energy = heard[:, 1:].sum(dim=-1, keepdim=True).clamp(0.0, 1.0)
+            gate = torch.sigmoid(self.write_gate(current)) * energy
+            key = F.normalize(torch.tanh(self.key(current)), dim=-1)
+            value = torch.tanh(self.value(current))
+            update = torch.bmm(value.unsqueeze(2), key.unsqueeze(1))
+            p = torch.sigmoid(self.p_keep_logit) * p + gate.unsqueeze(2) * update
+            p = torch.tanh(p)
+            read = torch.bmm(p, torch.tanh(self.query(current)).unsqueeze(2)).squeeze(2)
+        else:
+            read = current.new_zeros(current.shape[0], self.plastic)
+        logits = self.output(torch.cat((current, read), dim=-1))
+        acoustic = F.softmax(logits, dim=-1)
+        acoustic = torch.cat((acoustic[:, :1] * 0, acoustic[:, 1:]), dim=-1)
+        return logits, (h, p, environment[1:] + [acoustic])
+
     def forward(self, external, feedback_gain, delay, use_plastic=True, clear_h_at=None):
-        b, steps, _ = external.shape
-        h = [external.new_zeros(b, self.width) for _ in range(3)]
-        p = external.new_zeros(b, self.plastic, self.plastic)
-        # Bounded environment propagation queue, outside the learned memory.
-        environment = [external.new_zeros(b, N_TONES + 1) for _ in range(delay)]
-        out = []
-        for t in range(steps):
-            if clear_h_at is not None and t == clear_h_at:
-                h = [torch.zeros_like(v) for v in h]
-            heard = external[:, t] + feedback_gain * environment.pop(0)
-            old = torch.cat(h, dim=-1)
-            drive = self.encoder(heard)
-            keep = torch.sigmoid(self.keep_logit)
-            h = [keep[i] * h[i] + (1 - keep[i]) * torch.tanh(drive + self.recurrent[i](old))
-                 for i in range(3)]
-            current = torch.cat(h, dim=-1)
-            if use_plastic:
-                # Continuous acoustic-energy gating: received self-sound may also write.
-                energy = heard[:, 1:].sum(dim=-1, keepdim=True).clamp(0.0, 1.0)
-                gate = torch.sigmoid(self.write_gate(current)) * energy
-                key = F.normalize(torch.tanh(self.key(current)), dim=-1)
-                value = torch.tanh(self.value(current))
-                update = torch.bmm(value.unsqueeze(2), key.unsqueeze(1))
-                p = torch.sigmoid(self.p_keep_logit) * p + gate.unsqueeze(2) * update
-                p = torch.tanh(p)
-                read = torch.bmm(p, torch.tanh(self.query(current)).unsqueeze(2)).squeeze(2)
-            else:
-                read = current.new_zeros(b, self.plastic)
-            logits = self.output(torch.cat((current, read), dim=-1))
-            out.append(logits)
-            acoustic = F.softmax(logits, dim=-1)
-            environment.append(torch.cat((acoustic[:, :1] * 0, acoustic[:, 1:]), dim=-1))
-        return torch.stack(out, dim=1)
+        state = self.initial_state(external.shape[0], external.device, external.dtype, delay)
+        outputs = []
+        for t in range(external.shape[1]):
+            logits, state = self.step(external[:, t], state, feedback_gain, use_plastic,
+                                      clear_h=(t == clear_h_at))
+            outputs.append(logits)
+        return torch.stack(outputs, dim=1)
 
 
 def training_loss(logits, target, mask):
