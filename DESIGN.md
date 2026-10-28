@@ -121,6 +121,8 @@ x_t = external_t + Environment(y_{<t}) + noise_t
 
 第一套实验由 `trial1_colab.ipynb` 和 `trial1.py` 组成。Colab 中的 notebook 从 GitHub 克隆脚本，并挂载 Google Drive 保存结果。实验固定随机种子；记录音频采样率、输入／输出帧率、网络状态容量、反馈延迟分布、训练数据生成规则；导出音频例子与指标。第一项实现是阶段 A 的闭环环境和最小基线，而非自然语言模型。第一轮结果已回传，见 `TRIAL1_ANALYSIS.md`：三种回传条件下整条序列准确率均为 0，阶段 A 尚未通过。需要先改进和复测，再进入阶段 B。
 
+第二轮代码为 `trial2.py` 和 `trial2_colab.ipynb`。它保留同一合成频带任务，增加短到长的训练顺序、持续写入 Google Drive 的训练日志、序列编辑距离与起止错误，以及移除可塑性连接和清除循环活动的对照。第二轮训练尚未运行，结果需要从 Colab 回传后才能判断。
+
 ## 10. 相关研究入口
 
 - LMU：<https://papers.neurips.cc/paper_files/paper/2019/hash/952285b9b7e7a1be5aa7849f32ffff05-Abstract.html>
