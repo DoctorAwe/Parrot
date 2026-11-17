@@ -25,4 +25,4 @@
 
 ## Colab 操作与外链
 
-运行 `proto_microbe_colab.ipynb`：从 GitHub 取代码，在 Colab 训练、测试、保存结果到 Google Drive，然后启动 Gradio。启动单元会显示可在新标签页打开的临时 `gradio.live` 地址；Colab 运行时停止后演示即不可用。浏览器界面可以改变世界种子、资源数量和模拟时长，并播放或拖动轨迹。重播轨迹和训练日志只供外部观察/评价，绝不反馈给神经控制器。
+运行 `proto_microbe_colab.ipynb`：从 GitHub 取代码，在 Colab 训练、测试，优先保存结果到 Google Drive。若 Drive 挂载失败，笔记本改存到 `/content/proto_microbe_v1`，在完成后提供 ZIP 下载；应在 Colab 运行时结束前下载。随后启动 Gradio。启动单元会显示可在新标签页打开的临时 `gradio.live` 地址；Colab 运行时停止后演示即不可用。浏览器界面可以改变世界种子、资源数量和模拟时长，并播放或拖动轨迹。重播轨迹和训练日志只供外部观察/评价，绝不反馈给神经控制器。
