@@ -25,7 +25,8 @@ def create_demo(net, learned_genome=None):
         with gr.Row():
             seed = gr.Slider(0, 9999, value=3000, step=1, label="World seed")
             seconds = gr.Slider(5, 60, value=30, step=1, label="Simulation seconds")
-            resources = gr.Slider(5, 40, value=18, step=1, label="Resources")
+            resources = gr.Slider(30, 240, value=net.cfg.resource_count,
+                                  step=1, label="Resources")
             modes = ["Reflex"] + (["Trained"] if learned_genome is not None else [])
             mode = gr.Radio(modes, value=modes[-1], label="Controller")
         run = gr.Button("Run simulation", variant="primary")

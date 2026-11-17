@@ -42,7 +42,8 @@ def rollout_batch(net, genomes, seeds, device="cuda", steps=None, use_graph=True
     for seed in seeds:
         rng = np.random.default_rng(int(seed))
         resources_np.append(rng.uniform(1.0, cfg.world_size - 1.0, (r, 2)))
-        position_np.append(rng.uniform(3, cfg.world_size - 3, 2))
+        position_np.append(rng.uniform(0.45 * cfg.world_size,
+                                       0.55 * cfg.world_size, 2))
         heading_np.append(rng.uniform(-np.pi, np.pi))
     t = lambda x: torch.as_tensor(x, dtype=torch.float32, device=device)
     resources = t(np.asarray(resources_np)).repeat(g, 1, 1)
@@ -52,6 +53,7 @@ def rollout_batch(net, genomes, seeds, device="cuda", steps=None, use_graph=True
     state = {
         "position": position_initial.clone(), "heading": heading_initial.clone(),
         "phase": phase_initial.clone(),
+        "speed": torch.zeros(b, device=device),
         "remaining": torch.ones((b, r), dtype=torch.bool, device=device),
         "eaten": torch.zeros(b, dtype=torch.int32, device=device),
         "voltage": torch.zeros((b, n), device=device),
@@ -66,6 +68,7 @@ def rollout_batch(net, genomes, seeds, device="cuda", steps=None, use_graph=True
         state["position"].copy_(position_initial)
         state["heading"].copy_(heading_initial)
         state["phase"].copy_(phase_initial)
+        state["speed"].zero_()
         state["remaining"].fill_(True)
         state["eaten"].zero_()
         state["voltage"].zero_()
@@ -75,6 +78,7 @@ def rollout_batch(net, genomes, seeds, device="cuda", steps=None, use_graph=True
     def tick():
         position, heading = state["position"], state["heading"]
         phase, remaining = state["phase"], state["remaining"]
+        speed = state["speed"]
         voltage, output = state["voltage"], state["output"]
         adaptation = state["adaptation"]
         forward = torch.stack((torch.cos(heading), torch.sin(heading)), dim=1)
@@ -99,23 +103,22 @@ def rollout_batch(net, genomes, seeds, device="cuda", steps=None, use_graph=True
         rates = 2.2 + 1.5 * torch.tanh(torch.stack((
             motor[:, 0] - motor[:, 1], motor[:, 2] - motor[:, 3]), dim=1))
         next_phase = torch.remainder(phase + rates * cfg.dt, two_pi)
-        thrust = 0.60 + 0.42 * rates * (0.5 + 0.5 * torch.cos(next_phase).square())
-        speed = 0.31 * thrust.sum(dim=1)
-        next_heading = heading + 0.80 * (thrust[:, 1] - thrust[:, 0]) * cfg.dt
+        drive = torch.sigmoid(3.0 * (torch.stack((
+            motor[:, 0] - motor[:, 1], motor[:, 2] - motor[:, 3]), dim=1) - 0.25))
+        thrust = drive * (0.6 + 0.4 * torch.cos(next_phase).square())
+        target_speed = cfg.max_speed * thrust.mean(dim=1)
+        next_speed = (cfg.speed_retention * speed +
+                      (1 - cfg.speed_retention) * target_speed)
+        next_heading = heading + cfg.turn_gain * (thrust[:, 1] - thrust[:, 0]) * cfg.dt
         direction = torch.stack((torch.cos(next_heading), torch.sin(next_heading)), dim=1)
-        next_position = position + (speed * cfg.dt)[:, None] * direction
-        low, high = 0.25, cfg.world_size - 0.25
-        hit_x = (next_position[:, 0] < low) | (next_position[:, 0] > high)
-        next_heading = torch.where(hit_x, np.pi - next_heading, next_heading)
-        hit_y = (next_position[:, 1] < low) | (next_position[:, 1] > high)
-        next_heading = torch.where(hit_y, -next_heading, next_heading)
-        next_position = next_position.clamp(low, high)
+        next_position = position + (next_speed * cfg.dt)[:, None] * direction
         distance = torch.linalg.vector_norm(resources - next_position[:, None, :], dim=2)
         captured = remaining & (distance <= cfg.capture_radius)
         state["voltage"].copy_(next_voltage)
         state["output"].copy_(next_output)
         state["adaptation"].copy_(next_adaptation)
         state["phase"].copy_(next_phase)
+        state["speed"].copy_(next_speed)
         state["heading"].copy_(next_heading)
         state["position"].copy_(next_position)
         state["remaining"].copy_(remaining & ~captured)

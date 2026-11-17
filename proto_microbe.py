@@ -11,15 +11,12 @@ from pathlib import Path
 
 import numpy as np
 
-from microbe_world import NutrientWorld
-
-
 @dataclass
 class ProtoConfig:
-    world_size: float = 20.0
-    resource_count: int = 18
-    diffusion_length: float = 1.5
-    cutoff: float = 0.025
+    world_size: float = 60.0
+    resource_count: int = 144
+    diffusion_length: float = 2.5
+    cutoff: float = 0.01
     capture_radius: float = 0.48
     sensor_offset: float = 0.55
     sensor_forward: float = 0.45
@@ -28,6 +25,59 @@ class ProtoConfig:
     neuron_count: int = 128
     fan_in: int = 12
     flagellum_span: float = 0.72
+    max_speed: float = 0.8
+    speed_retention: float = 0.96
+    turn_gain: float = 1.5
+
+
+class ProtoNutrientWorld:
+    """Unbounded water plane; world_size determines only the resource field."""
+
+    def __init__(self, seed, cfg):
+        self.cfg = cfg
+        rng = np.random.default_rng(seed)
+        self.resources = rng.uniform(1.0, cfg.world_size - 1.0,
+                                     (cfg.resource_count, 2))
+        self.remaining = np.ones(cfg.resource_count, dtype=bool)
+        self.position = rng.uniform(0.45 * cfg.world_size,
+                                    0.55 * cfg.world_size, 2)
+        self.heading = rng.uniform(-np.pi, np.pi)
+        self.phases = np.array([0.0, 1.6])
+        self.speed = 0.0
+        self.eaten = 0
+
+    def sensors(self):
+        forward = np.array((np.cos(self.heading), np.sin(self.heading)))
+        side = np.array((-forward[1], forward[0]))
+        center = self.position + self.cfg.sensor_forward * forward
+        sites = np.stack((center + self.cfg.sensor_offset * side,
+                          center - self.cfg.sensor_offset * side))
+        distance = np.linalg.norm(sites[:, None, :] - self.resources[None, :, :], axis=-1)
+        contribution = np.exp(-distance / self.cfg.diffusion_length)
+        sensed = np.sum(np.where(contribution >= self.cfg.cutoff, contribution, 0.0)
+                        * self.remaining[None, :], axis=1)
+        return sensed, sites
+
+    def step(self, motor):
+        motor = np.asarray(motor)
+        difference = np.array((motor[0] - motor[1], motor[2] - motor[3]))
+        rates = 2.2 + 1.5 * np.tanh(difference)
+        self.phases = (self.phases + rates * self.cfg.dt) % (2 * np.pi)
+        swing = self.cfg.flagellum_span * np.sin(self.phases)
+        drive = 1.0 / (1.0 + np.exp(-3.0 * (difference - 0.25)))
+        thrust = drive * (0.6 + 0.4 * np.cos(self.phases) ** 2)
+        target_speed = self.cfg.max_speed * np.mean(thrust)
+        self.speed = (self.cfg.speed_retention * self.speed +
+                      (1 - self.cfg.speed_retention) * target_speed)
+        self.heading += self.cfg.turn_gain * (thrust[1] - thrust[0]) * self.cfg.dt
+        self.position += self.speed * self.cfg.dt * np.array(
+            (np.cos(self.heading), np.sin(self.heading)))
+        distance = np.linalg.norm(self.resources - self.position, axis=1)
+        newly_eaten = self.remaining & (distance <= self.cfg.capture_radius)
+        self.remaining[newly_eaten] = False
+        count = int(newly_eaten.sum())
+        self.eaten += count
+        return swing, count
 
 
 class BilateralNerveNet:
@@ -99,7 +149,7 @@ class BilateralNerveNet:
 
 def rollout(net, genome, seed, cfg=None, record=False):
     cfg = cfg or net.cfg
-    world = NutrientWorld(seed, cfg)
+    world = ProtoNutrientWorld(seed, cfg)
     state = net.initial_state()
     frames = []
     initial_resources = world.resources.copy()
@@ -113,6 +163,7 @@ def rollout(net, genome, seed, cfg=None, record=False):
                            "sensor_sites": sensor_sites.tolist(),
                            "sensed": sensed.tolist(), "motor": motor.tolist(),
                            "swing": swing.tolist(),
+                           "speed": float(world.speed),
                            "remaining": world.remaining.astype(int).tolist(),
                            "eaten": world.eaten})
     score = float(world.eaten)
@@ -213,14 +264,17 @@ def replay_figure(replay, every=30):
 
     frame_objects = [go.Frame(data=dynamic_traces(i), traces=list(range(1, 7)),
                               name=str(f["tick"])) for i, f in enumerate(frames)]
+    all_positions = np.asarray([f["position"] for f in replay["frames"]])
+    low = np.minimum(0.0, all_positions.min(axis=0) - 2.0)
+    high = np.maximum(cfg["world_size"], all_positions.max(axis=0) + 2.0)
     fig = go.Figure(data=[go.Heatmap(x=axis, y=axis, z=field,
                                      colorscale="YlGn", opacity=0.65,
                                      showscale=False)] + dynamic_traces(0),
                     frames=frame_objects)
     fig.update_layout(
         title=f"100 ticks/s · eaten {replay['eaten']} / {len(resources)}",
-        xaxis=dict(range=[0, cfg["world_size"]], scaleanchor="y"),
-        yaxis=dict(range=[0, cfg["world_size"]]),
+        xaxis=dict(range=[low[0], high[0]], scaleanchor="y"),
+        yaxis=dict(range=[low[1], high[1]]),
         height=650,
         updatemenus=[dict(type="buttons", buttons=[
             dict(label="Play", method="animate", args=[None, {"frame": {"duration": 65,
